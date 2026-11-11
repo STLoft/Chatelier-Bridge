@@ -23,7 +23,7 @@ const MAX_PROMPT_CHARS = 30000;
 const MAX_REF_COUNT = 3;
 const MAX_REF_BYTES = 12 * 1024 * 1024;
 const GENERATION_TIMEOUT_MS = 7 * 60 * 1000;
-const CLIENT_VERSION = '1.0.0';
+const CLIENT_VERSION = '1.0.1';
 
 let cachedBinary = null;
 let cachedStatus = null;
@@ -715,7 +715,7 @@ module.exports = {
                 if (!status.available) return res.status(503).json({ ok: false, error: status.error || 'Codex CLI를 사용할 수 없습니다.' });
                 if (!status.loggedInWithChatGPT) {
                     const detail = status.loginStatus || '로그인 상태를 확인할 수 없음';
-                    return res.status(401).json({ ok: false, error: `ChatGPT OAuth로 로그인한 Codex CLI가 필요합니다. 터미널에서 codex login을 실행하세요. (${detail})` });
+                    return res.status(401).json({ ok: false, error: `ChatGPT 계정으로 로그인한 Codex CLI가 필요합니다. 터미널에서 codex login을 실행하세요. (${detail})` });
                 }
 
                 if (CODEX_TRANSPORT === 'exec' && activeGenerations > 0) return res.status(409).json({ ok: false, error: '이미지 생성이 이미 진행 중입니다. 완료 후 다시 시도하세요.' });

@@ -1,6 +1,6 @@
 {
   "name": "chatelier-bridge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "SillyTavern image bridge for Chatelier on desktop and Termux",
   "main": "index.js",
