@@ -1,0 +1,9 @@
+node_modules/
+output/
+workspace/
+*.bak
+*.log
+.env
+.env.*
+auth.json
+.codex/

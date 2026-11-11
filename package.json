@@ -1,0 +1,19 @@
+{
+  "name": "chatelier-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SillyTavern image bridge for Chatelier on desktop and Termux",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "check": "node --check index.js && node --check exec-transport.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/STLoft/Chatelier-Bridge.git"
+  },
+  "author": "STLoft"
+}
