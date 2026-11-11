@@ -126,7 +126,8 @@ codex login status
 | `ST_CODEX_TRANSPORT` | `app-server` 또는 `exec` | 터먹스 `exec`, 그 외 `app-server` |
 | `CODEX_HOME` | CLI 자체 설정·로그인 환경 선택 | Codex CLI 기본 동작 |
 | `ST_CODEX_SANDBOX` | app-server의 샌드박스 이름을 명시적으로 지정 | `workspace-write`부터 시도 |
-| `ST_CODEX_ALLOW_CLI_UPDATE` | PC 화면에서 CLI 업데이트 허용 | 꺼짐. `1`이면 허용 |
+| `ST_CODEX_AUTO_UPDATE` | 시작 시 npm Codex CLI 자동 업데이트 | 켜짐. `0`이면 끔 |
+| `ST_CODEX_ALLOW_CLI_UPDATE` | 화면에서 수동 CLI 업데이트 버튼 허용 | 꺼짐. `1`이면 허용 |
 
 환경변수는 **SillyTavern 서버를 시작하는 터미널·서비스**에 설정해야 합니다. 브라우저 새로고침만으로는 변경되지 않습니다. 일반적인 설치에서는 설정할 필요가 없습니다.
 
@@ -144,7 +145,7 @@ export ST_CODEX_BIN="$(command -v codex)"
 node server.js
 ```
 
-터먹스에서는 PC용 `@openai/codex`로 자동 교체하지 않도록 화면의 CLI 업데이트를 제공하지 않습니다. 서버 터미널에서 설치한 터먹스용 패키지를 업데이트하세요.
+CLI 업데이트 패키지는 환경에 따라 고정됩니다. PC에서는 `@openai/codex`, 터먹스에서는 `@mmmbuto/codex-cli-termux`를 사용합니다. 요청이나 프롬프트로 패키지·명령을 변경할 수 없습니다.
 
 ## 저장 위치와 처리 범위
 
@@ -152,6 +153,7 @@ node server.js
 | --- | --- |
 | `plugins/Chatelier-Bridge/output/` | 생성 및 보관된 이미지 |
 | `plugins/Chatelier-Bridge/workspace/jobs/` | 생성 중 임시 참조 이미지와 작업 파일 |
+| `plugins/Chatelier-Bridge/workspace/cli-backups/` | CLI 업데이트 직전의 npm 패키지와 검증 기록 |
 | SillyTavern 사용자 설정 | Chatelier 프리셋, 확장 설정, 기록 |
 
 정상적인 요청 종료·취소 후 해당 임시 작업 폴더를 정리합니다. 서버나 Android 프로세스가 강제로 종료되면 임시 폴더가 남을 수 있습니다. 생성 이미지는 기록 사용을 위해 보관하며 Git 추적에서 제외합니다.
@@ -168,14 +170,29 @@ git -C plugins/Chatelier-Bridge pull --ff-only
 
 그다음 서버를 다시 시작하고, 브라우저의 확장 관리에서 Chatelier도 업데이트한 뒤 새로고침합니다. 서버 플러그인 업데이트에는 서버 재시작이 필요합니다.
 
-Codex CLI는 별도로 업데이트합니다.
+### Codex CLI 자동 업데이트
+
+SillyTavern 서버가 시작되면 npm으로 설치된 Codex CLI의 새 버전을 확인하고, 새 버전이 있을 때 자동 업데이트합니다. 서버 플러그인 Git 업데이트와는 별도 과정입니다.
+
+- PC: `@openai/codex`
+- 네이티브 터먹스: `@mmmbuto/codex-cli-termux`
+
+설치된 패키지 파일을 먼저 `workspace/cli-backups/`에 복사하고 SHA-256으로 확인한 뒤 업데이트합니다. 로그인·설정 파일은 변경하지 않습니다. 백업은 Git에 포함되지 않으며 자동 삭제하지 않습니다.
+
+업데이트 확인·진행 중에는 모델 조회와 이미지 생성을 잠시 기다립니다. 설정 화면은 상태를 자동 확인하며 완료되면 모델 목록을 다시 가져옵니다. 네트워크·권한 문제로 실패하면 오류를 표시하고 다음 서버 시작 때 재시도합니다. 사용 가능한 기존 CLI가 남아 있으면 계속 사용할 수 있습니다.
+
+자동 업데이트는 **선택된 실행 파일이 해당 npm 패키지에 속하는지 확인된 경우**에만 적용합니다. 임의의 `ST_CODEX_BIN`, 별도 실행 파일·다른 설치 관리자로 설치한 CLI는 덮어쓰지 않습니다. Windows에서는 PATH에서 먼저 찾은 명령을 사용하므로 npm 명령보다 뒤에 있는 별도 실행 파일이 우선 선택되지 않습니다.
+
+터먹스 패키지 버전과 내부 CLI가 표시하는 빌드 버전은 다를 수 있습니다. 자동 업데이트 여부는 설치된 npm 패키지 버전을 기준으로 판단해 같은 패키지를 매번 재설치하지 않습니다.
+
+자동 업데이트를 끄려면 서버 실행 환경에 `ST_CODEX_AUTO_UPDATE=0`을 설정합니다. 이 경우 필요할 때 직접 업데이트합니다.
 
 ```sh
 # PC에서 npm으로 설치한 경우
 npm install -g @openai/codex
 ```
 
-터먹스용 CLI는 [터먹스 안내의 업데이트](docs/TERMUX.md#업데이트)를 참고하세요. 플러그인 업데이트는 CLI나 프리셋을 덮어쓰지 않습니다. 로컬에서 소스를 직접 수정했다면 `git pull`이 중단될 수 있으므로 수정분을 따로 보관하세요.
+터먹스용 CLI의 수동 업데이트는 [터먹스 안내](docs/TERMUX.md#업데이트)를 참고하세요. 프리셋은 별도 사용자 설정으로 유지됩니다. 플러그인 소스를 직접 수정했다면 `git pull`이 중단될 수 있으므로 수정분을 따로 보관하세요.
 
 ## 문제 해결
 

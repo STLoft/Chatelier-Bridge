@@ -1,6 +1,6 @@
 {
   "name": "chatelier-bridge",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "description": "SillyTavern image bridge for Chatelier on desktop and Termux",
   "main": "index.js",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.cjs",
-    "check": "node --check index.js && node --check exec-transport.cjs"
+    "check": "node --check index.js && node --check exec-transport.cjs && node --check cli-update.cjs"
   },
   "repository": {
     "type": "git",

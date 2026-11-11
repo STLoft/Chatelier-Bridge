@@ -10,9 +10,12 @@ const crypto = require('node:crypto');
 
 const execFileAsync = promisify(execFile);
 const { generateExecImage } = require('./exec-transport.cjs');
+const { cliPackage, firstWindowsCommand, resolveNpmInstallation, backupNpmInstallation } = require('./cli-update.cjs');
 const IS_TERMUX = process.platform === 'android' || Boolean(process.env.TERMUX_VERSION) || /com\.termux/.test(process.env.PREFIX || '');
 const CODEX_TRANSPORT = process.env.ST_CODEX_TRANSPORT || (IS_TERMUX ? 'exec' : 'app-server');
-const CLI_UPDATE_ENABLED = process.env.ST_CODEX_ALLOW_CLI_UPDATE === '1' && !IS_TERMUX;
+const CLI_UPDATE_ENABLED = process.env.ST_CODEX_ALLOW_CLI_UPDATE === '1';
+const CLI_AUTO_UPDATE_ENABLED = process.env.ST_CODEX_AUTO_UPDATE !== '0';
+const CODEX_NPM_PACKAGE = cliPackage(IS_TERMUX);
 
 const PLUGIN_ID = 'codex-image';
 const PLUGIN_ROOT = __dirname;
@@ -23,19 +26,22 @@ const MAX_PROMPT_CHARS = 30000;
 const MAX_REF_COUNT = 3;
 const MAX_REF_BYTES = 12 * 1024 * 1024;
 const GENERATION_TIMEOUT_MS = 7 * 60 * 1000;
-const CLIENT_VERSION = '1.0.1';
+const CLIENT_VERSION = '1.1.0';
 
 let cachedBinary = null;
 let cachedStatus = null;
 let cachedStatusAt = 0;
 let cachedLatestVersion = '';
 let cachedLatestAt = 0;
+let installedPackageVersion = '';
 let cliUpdating = null;
+let startupCliUpdate = null;
+const cliAutoUpdate = { enabled: CLI_AUTO_UPDATE_ENABLED, state: CLI_AUTO_UPDATE_ENABLED ? 'checking' : 'disabled', error: '' };
 let activeGenerations = 0;
 
 const CLI_UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 
-const CODEX_REGISTRY_URL = 'https://registry.npmjs.org/@openai/codex/latest';
+const CODEX_REGISTRY_URL = `https://registry.npmjs.org/${CODEX_NPM_PACKAGE}/latest`;
 const LATEST_VERSION_TTL_MS = 6 * 60 * 60 * 1000;
 
 function safeError(error) {
@@ -65,7 +71,7 @@ async function resolveCodexBinary(force = false) {
         if (process.platform === 'win32') {
             const { stdout } = await execFileAsync('where.exe', ['codex'], { windowsHide: true, timeout: 10000 });
             const found = String(stdout || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-            const preferred = found.find(x => /\.exe$/i.test(x)) || found.find(x => /\.cmd$/i.test(x)) || found[0];
+            const preferred = firstWindowsCommand(found);
             if (preferred) {
                 cachedBinary = preferred;
                 return cachedBinary;
@@ -122,8 +128,8 @@ function runCodexCommand(binary, args, { timeout = 15000 } = {}) {
 }
 
 function parseVersion(text) {
-    const match = String(text || '').match(/(\d+)\.(\d+)\.(\d+)/);
-    return match ? match.slice(1, 4).map(Number) : null;
+    const match = String(text || '').match(/(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z0-9.-]+))?/);
+    return match ? { core: match.slice(1, 4).map(Number), prerelease: match[4]?.split('.') || [] } : null;
 }
 
 function isNewerVersion(latest, current) {
@@ -131,7 +137,17 @@ function isNewerVersion(latest, current) {
     const b = parseVersion(current);
     if (!a || !b) return false;
     for (let i = 0; i < 3; i++) {
-        if (a[i] !== b[i]) return a[i] > b[i];
+        if (a.core[i] !== b.core[i]) return a.core[i] > b.core[i];
+    }
+    if (!a.prerelease.length || !b.prerelease.length) return !a.prerelease.length && Boolean(b.prerelease.length);
+    for (let i = 0; i < Math.max(a.prerelease.length, b.prerelease.length); i++) {
+        const left = a.prerelease[i], right = b.prerelease[i];
+        if (left === right) continue;
+        if (left === undefined || right === undefined) return right === undefined;
+        const leftNumeric = /^\d+$/.test(left), rightNumeric = /^\d+$/.test(right);
+        if (leftNumeric && rightNumeric) return Number(left) > Number(right);
+        if (leftNumeric !== rightNumeric) return !leftNumeric;
+        return left > right;
     }
     return false;
 }
@@ -153,18 +169,34 @@ async function getLatestCodexVersion(force = false) {
     return cachedLatestVersion;
 }
 
-// Runs a fixed npm command (no caller-supplied arguments) to update the global CLI.
-async function updateCodexCli() {
+// The package is selected locally by platform; request bodies cannot change the npm command.
+async function detectCliInstallation(binary) {
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const root = await runCodexCommand(npm, ['root', '-g']);
+    if (root.code !== 0 || !root.stdout) throw new Error('npm 전역 설치 경로를 확인하지 못했습니다.');
+    const installation = await resolveNpmInstallation(binary, root.stdout.trim(), CODEX_NPM_PACKAGE);
+    installedPackageVersion = installation.version;
+    return installation;
+}
+
+async function updateCodexCli(knownInstallation = null) {
     if (cliUpdating) return await cliUpdating;
     if (activeGenerations > 0) throw new Error('이미지 생성 중에는 업데이트할 수 없습니다. 생성이 끝난 뒤 다시 시도하세요.');
     cliUpdating = (async () => {
         const before = (await getCodexStatus(true)).version;
         const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-        const result = await runCodexCommand(npm, ['install', '-g', '@openai/codex@latest'], { timeout: CLI_UPDATE_TIMEOUT_MS });
+        const installation = knownInstallation || await detectCliInstallation(await resolveCodexBinary());
+        const backup = await backupNpmInstallation(installation, path.join(WORKSPACE_DIR, 'cli-backups'));
+        console.log(`[${PLUGIN_ID}] CLI ${installation.version} backup verified: ${backup}`);
+        const result = await runCodexCommand(npm, ['install', '-g', `${CODEX_NPM_PACKAGE}@latest`], { timeout: CLI_UPDATE_TIMEOUT_MS });
         if (result.code !== 0) throw new Error(`npm install 실패 (exit ${result.code})\n${(result.stderr || result.stdout).slice(-1500)}`);
         cachedBinary = null;
+        await detectCliInstallation(await resolveCodexBinary(true));
         const status = await getCodexStatus(true);
-        return { before, after: status.version, status };
+        if (!status.available) throw new Error('업데이트 후 Codex CLI 실행을 확인하지 못했습니다. CLI 백업과 서버 로그를 확인하세요.');
+        cliAutoUpdate.error = '';
+        cliAutoUpdate.state = 'updated';
+        return { before, after: status.version, status: statusWithMaintenance(status) };
     })();
     try {
         return await cliUpdating;
@@ -173,9 +205,38 @@ async function updateCodexCli() {
     }
 }
 
+async function updateCliAtStartup() {
+    if (!CLI_AUTO_UPDATE_ENABLED) return;
+    try {
+        const status = await getCodexStatus(true);
+        if (!status.available) { cliAutoUpdate.state = 'unavailable'; return; }
+        if (!status.latestVersion) throw new Error('CLI 최신 버전을 확인하지 못했습니다. 다음 시작 시 다시 시도합니다.');
+        const installation = await detectCliInstallation(await resolveCodexBinary());
+        if (!isNewerVersion(status.latestVersion, installation.version)) { cliAutoUpdate.state = 'current'; return; }
+        cliAutoUpdate.state = 'updating';
+        const result = await updateCodexCli(installation);
+        cliAutoUpdate.state = 'updated';
+        console.log(`[${PLUGIN_ID}] CLI auto-update: ${result.before} -> ${result.after}`);
+    } catch (error) {
+        cliAutoUpdate.state = error.code === 'UNSUPPORTED_INSTALL' ? 'unsupported' : 'failed';
+        cliAutoUpdate.error = safeError(error);
+        console.warn(`[${PLUGIN_ID}] CLI auto-update: ${cliAutoUpdate.error}`);
+    }
+}
+
+function cliMaintenancePending() {
+    return Boolean(cliUpdating) || ['checking', 'updating'].includes(cliAutoUpdate.state);
+}
+
+function statusWithMaintenance(status) {
+    return { ...status, installedPackageVersion,
+        updateAvailable: isNewerVersion(status.latestVersion, installedPackageVersion || status.version),
+        cliAutoUpdate: { ...cliAutoUpdate } };
+}
+
 async function getCodexStatus(force = false) {
     const now = Date.now();
-    if (!force && cachedStatus && now - cachedStatusAt < 10000) return cachedStatus;
+    if (!force && cachedStatus && now - cachedStatusAt < 10000) return statusWithMaintenance(cachedStatus);
 
     const status = {
         available: false,
@@ -202,7 +263,7 @@ async function getCodexStatus(force = false) {
         status.version = version.stdout || version.stderr;
         status.available = true;
 
-        status.latestVersion = IS_TERMUX ? '' : await getLatestCodexVersion(force);
+        status.latestVersion = await getLatestCodexVersion(force);
         status.updateAvailable = isNewerVersion(status.latestVersion, status.version);
 
         try {
@@ -226,7 +287,7 @@ async function getCodexStatus(force = false) {
 
     cachedStatus = status;
     cachedStatusAt = now;
-    return status;
+    return statusWithMaintenance(status);
 }
 
 class CodexAppServer extends EventEmitter {
@@ -655,8 +716,11 @@ module.exports = {
     async init(router) {
         await ensureDirs();
 
+        // Run in the background so SillyTavern can start serving while CLI maintenance runs.
+        startupCliUpdate = updateCliAtStartup();
+
         // Check the CLI once at startup without delaying SillyTavern's boot.
-        getCodexStatus(true).then(status => {
+        startupCliUpdate.then(() => getCodexStatus(false)).then(status => {
             if (!status.available) console.warn(`[${PLUGIN_ID}] Codex CLI 확인 실패: ${status.error}`);
             else if (status.updateAvailable) console.warn(`[${PLUGIN_ID}] ${status.version} → 최신 ${status.latestVersion} 업데이트 가능 (npm install -g @openai/codex@latest)`);
             else console.log(`[${PLUGIN_ID}] ${status.version}${status.latestVersion ? ' (최신)' : ''}`);
@@ -673,6 +737,7 @@ module.exports = {
         });
 
         router.get('/models', async (req, res) => {
+            if (cliMaintenancePending()) return res.status(503).json({ ok: false, error: 'Codex CLI 자동 업데이트 확인 중입니다. 잠시 후 새로고침하세요.' });
             try {
                 res.json({ ok: true, models: await getCodexModels(), allowCustom: CODEX_TRANSPORT === 'exec', modelRequired: CODEX_TRANSPORT !== 'exec' });
             } catch (error) {
@@ -682,6 +747,7 @@ module.exports = {
 
         router.post('/update-cli', async (_req, res) => {
             if (!CLI_UPDATE_ENABLED) return res.status(403).json({ ok: false, error: 'CLI 업데이트는 서버 터미널에서 실행하세요.' });
+            if (cliMaintenancePending()) return res.status(503).json({ ok: false, error: 'Codex CLI 자동 업데이트가 진행 중입니다.' });
             try {
                 res.json({ ok: true, ...(await updateCodexCli()) });
             } catch (error) {
@@ -700,6 +766,7 @@ module.exports = {
             res.once('close', onClosed);
 
             try {
+                if (cliMaintenancePending()) return res.status(503).json({ ok: false, error: 'Codex CLI 자동 업데이트 확인 중입니다. 완료 후 다시 생성하세요.' });
                 const prompt = String(req.body?.prompt || '').trim();
                 if (!prompt) return res.status(400).json({ ok: false, error: '이미지 프롬프트가 비어 있습니다.' });
                 if (prompt.length > MAX_PROMPT_CHARS) return res.status(400).json({ ok: false, error: `프롬프트가 너무 깁니다. (${MAX_PROMPT_CHARS}자 제한)` });
