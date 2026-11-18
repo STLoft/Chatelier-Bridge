@@ -4,6 +4,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
+const { cliInvocation } = require('./cli-resolver.cjs');
 
 async function snapshotImages(directory, result = new Map()) {
     let entries;
@@ -23,7 +24,8 @@ async function snapshotImages(directory, result = new Map()) {
 function runExec(binary, args, input, { cwd, signal, timeoutMs = 8 * 60 * 1000, env = process.env }) {
     return new Promise((resolve, reject) => {
         if (signal?.aborted) return reject(new Error('사용자가 취소했습니다.'));
-        const child = spawn(binary, args, { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        const cli = cliInvocation(binary, args);
+        const child = spawn(cli.command, cli.args, { cwd, env, shell: cli.shell, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
         let stdout = '', stderr = '', failure = null;
         const stop = message => { failure = new Error(message); child.kill('SIGKILL'); };
         const onAbort = () => stop('사용자가 취소했습니다.');

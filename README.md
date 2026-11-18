@@ -250,3 +250,24 @@ npm run check
 - [OpenAI Docs: app-server](https://learn.chatgpt.com/docs/app-server)
 
 STLoft의 커뮤니티 프로젝트이며, SillyTavern 또는 OpenAI의 공식 플러그인이 아닙니다.
+
+
+### 로그인했는데 CLI를 찾지 못하는 경우
+
+로그인 정보와 실행파일 탐색은 별개입니다. 서버를 실행한 터미널이 예전 PATH를 유지하거나 `where`/`which`가 없는 환경에서도 CLI를 놓칠 수 있습니다. 이 버전은 PATH를 직접 확인하고, 사용자 npm 설치 폴더·Node.js 옆·Termux의 PREFIX/bin 등도 확인합니다. 설치 후에는 터미널과 실리태번 서버를 모두 재시작하세요.
+
+사용자 지정 위치라면 서버를 시작할 같은 터미널에서 실제 실행파일의 절대 경로를 지정합니다.
+
+```powershell
+# Windows PowerShell: npm 기본 설치 위치
+$env:ST_CODEX_BIN = "$env:APPDATA\npm\codex.cmd"
+.\Start.bat
+```
+
+```sh
+# Termux: 명령이 정상 동작하는 터미널에서
+export ST_CODEX_BIN="$(command -v codex)"
+# 이어서 평소 사용하는 명령으로 실리태번 서버를 실행합니다.
+```
+
+다른 Windows 사용자, WSL, 컨테이너에 설치·로그인한 CLI는 현재 서버와 별개입니다. CLI 경로를 찾은 다음에도 로그인 문제가 남으면 같은 서버 환경의 `codex login status`를 확인하세요.

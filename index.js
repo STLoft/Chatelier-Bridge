@@ -9,6 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const execFileAsync = promisify(execFile);
+const { findCodex, cliInvocation } = require('./cli-resolver.cjs');
 const { generateExecImage } = require('./exec-transport.cjs');
 const { cliPackage, firstWindowsCommand, resolveNpmInstallation, backupNpmInstallation } = require('./cli-update.cjs');
 const IS_TERMUX = process.platform === 'android' || Boolean(process.env.TERMUX_VERSION) || /com\.termux/.test(process.env.PREFIX || '');
@@ -67,25 +68,10 @@ async function resolveCodexBinary(force = false) {
         return cachedBinary;
     }
 
-    try {
-        if (process.platform === 'win32') {
-            const { stdout } = await execFileAsync('where.exe', ['codex'], { windowsHide: true, timeout: 10000 });
-            const found = String(stdout || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-            const preferred = firstWindowsCommand(found);
-            if (preferred) {
-                cachedBinary = preferred;
-                return cachedBinary;
-            }
-        } else {
-            const { stdout } = await execFileAsync('which', ['codex'], { timeout: 10000 });
-            const found = String(stdout || '').trim();
-            if (found) {
-                cachedBinary = found.split(/\r?\n/)[0];
-                return cachedBinary;
-            }
-        }
-    } catch (_) {
-        // handled below
+    const found = await findCodex();
+    if (found) {
+        cachedBinary = found;
+        return cachedBinary;
     }
 
     throw new Error('Codex CLI를 찾지 못했습니다. Codex CLI를 설치한 뒤 SillyTavern을 재시작하세요. (서버 환경변수 ST_CODEX_BIN으로 경로 지정 가능)');
@@ -93,9 +79,10 @@ async function resolveCodexBinary(force = false) {
 
 function runCodexCommand(binary, args, { timeout = 15000 } = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(binary, args, {
+        const cli = cliInvocation(binary, args, { platform: process.platform, executable: process.execPath });
+        const child = spawn(cli.command, cli.args, {
             windowsHide: true,
-            shell: isCmdFile(binary),
+            shell: cli.shell,
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -303,10 +290,11 @@ class CodexAppServer extends EventEmitter {
     }
 
     async start() {
-        this.child = spawn(this.binary, ['app-server'], {
+        const cli = cliInvocation(this.binary, ['app-server'], { platform: process.platform, executable: process.execPath });
+        this.child = spawn(cli.command, cli.args, {
             cwd: this.cwd,
             windowsHide: true,
-            shell: isCmdFile(this.binary),
+            shell: cli.shell,
             env: process.env,
             stdio: ['pipe', 'pipe', 'pipe'],
         });
